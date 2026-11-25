@@ -150,6 +150,14 @@ class TestPytestReportHeader:
         result = testdir.runpytest_inprocess("--testmon", "--help")
         assert result.ret == 0
 
+    @pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+    def test_help_frees_tool_id(self, testdir, test_a):
+        # --help configures pytest but starts no session: without
+        # pytest_unconfigure, the collector's tool id would never be freed.
+        for _ in range(5):
+            assert testdir.runpytest_inprocess("--testmon", "--help").ret == 0
+        assert "testmon" not in [sys.monitoring.get_tool(i) for i in range(6)]
+
     def test_select(self, testdir, test_a):
         result = testdir.runpytest_inprocess("--testmon-noselect")
         result.stdout.fnmatch_lines(

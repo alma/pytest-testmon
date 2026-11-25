@@ -37,10 +37,14 @@ def search_free_tool_id():
     return None
 
 
+class NoFreeToolId(RuntimeError):
+    pass
+
+
 def _acquire_tool_id(name):
     tool_id = search_free_tool_id()
     if tool_id is None:
-        raise RuntimeError("testmon: no free sys.monitoring tool id")
+        raise NoFreeToolId("testmon: no free sys.monitoring tool id")
     sysmon.use_tool_id(tool_id, name)
     return tool_id
 
@@ -72,7 +76,10 @@ class SysmonCollector:
             if key.endswith("lib")
         )
 
-        self._tool_id = None
+        # Taken now, not at the first test: make_collector falls back to
+        # ctrace when no id is free, which it can't do once tests run.
+        self._tool_id = _acquire_tool_id("testmon")
+        self._monitoring = False
         # Code objects armed with local events (see _arm), keyed by id(): code
         # objects compare *equal* when only co_filename differs (e.g. the same
         # test function in two modules), so a set() would silently skip one.
@@ -142,7 +149,7 @@ class SysmonCollector:
         return DISABLE
 
     def _start_monitoring(self):
-        self._tool_id = _acquire_tool_id("testmon")
+        self._monitoring = True
         sysmon.register_callback(self._tool_id, EV.PY_START, self._on_py_start)
         sysmon.register_callback(self._tool_id, EV.LINE, self._on_line)
         sysmon.register_callback(self._tool_id, EV.INSTRUCTION, self._on_instruction)
@@ -171,7 +178,7 @@ class SysmonCollector:
             self._batch_pairs += len(per_test) - files_before
 
     def start_testmon(self, test_name, next_test_name=None):
-        if self._tool_id is None:
+        if not self._monitoring:
             self._start_monitoring()
         self._flush_current()
         self._test_name = test_name
@@ -182,16 +189,18 @@ class SysmonCollector:
         self._interrupted_at = self._test_name
 
     def get_batch_coverage_data(self) -> NodesFilesLines:
-        if self._tool_id is None or not (
+        if not self._monitoring or not (
             len(self.batched_test_names) >= TEST_BATCH_SIZE
             or self._batch_pairs >= BATCH_PAIRS
             or self._next_test_name is None
             or self._interrupted_at
         ):
             return {}
-        # Lines executed after this point (until the next switch) stay with the
-        # current test and are reported in the next batch, like with contexts.
         self._flush_current()
+        # Lines executed from now until the next test starts (e.g. a conftest.py
+        # pytest_runtest_logreport hook) are dropped. Reported in the next
+        # batch, they would replace this test's whole fingerprint in the DB.
+        self._test_name = None
 
         nodes_files_lines = {}
         for test_name, files in self._batch.items():
@@ -215,14 +224,16 @@ class SysmonCollector:
         if self._tool_id is None:
             return
         tool_id, self._tool_id = self._tool_id, None
-        sysmon.set_events(tool_id, 0)
-        for code in self._armed.values():
-            sysmon.set_local_events(tool_id, code, 0)
-        self._armed.clear()
-        self._one_line.clear()
-        sysmon.register_callback(tool_id, EV.PY_START, None)
-        sysmon.register_callback(tool_id, EV.LINE, None)
-        sysmon.register_callback(tool_id, EV.INSTRUCTION, None)
+        if self._monitoring:
+            self._monitoring = False
+            sysmon.set_events(tool_id, 0)
+            for code in self._armed.values():
+                sysmon.set_local_events(tool_id, code, 0)
+            self._armed.clear()
+            self._one_line.clear()
+            sysmon.register_callback(tool_id, EV.PY_START, None)
+            sysmon.register_callback(tool_id, EV.LINE, None)
+            sysmon.register_callback(tool_id, EV.INSTRUCTION, None)
         if hasattr(sysmon, "clear_tool_id"):
             sysmon.clear_tool_id(tool_id)
         sysmon.free_tool_id(tool_id)

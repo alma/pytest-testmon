@@ -431,6 +431,12 @@ class TestmonCollect:
             )
         self.testmon.close()
 
+    def pytest_unconfigure(self, config):  # pylint: disable=unused-argument
+        # Some runs configure pytest but start no session (--help): free the
+        # collector's resources (a sys.monitoring tool id) anyway. close() is
+        # a no-op when pytest_sessionfinish already closed it.
+        self.testmon.close()
+
 
 class TestmonXdistSync:
     def __init__(self, sync=True):

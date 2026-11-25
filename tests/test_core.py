@@ -114,31 +114,58 @@ if sys.version_info >= (3, 12):
     COLLECTORS["sysmon"] = SysmonCollector
 
 
+@pytest.fixture
+def collectors():
+    """Close the collectors a test makes: SysmonCollector holds a tool id."""
+    made = []
+    yield made
+    for collector in made:
+        collector.close()
+
+
 class TestMakeCollector:
-    def test_default(self, monkeypatch):
+    @pytest.fixture
+    def make(self, collectors):
+        def make():
+            collectors.append(make_collector(""))
+            return collectors[-1]
+
+        return make
+
+    def test_default(self, monkeypatch, make):
         monkeypatch.delenv("TESTMON_CORE", raising=False)
         expected = "sysmon" if sys.version_info >= (3, 12) else "ctrace"
-        assert isinstance(make_collector(""), COLLECTORS[expected])
+        assert isinstance(make(), COLLECTORS[expected])
 
     @pytest.mark.parametrize("core", COLLECTORS)
-    def test_forced(self, monkeypatch, core):
+    def test_forced(self, monkeypatch, core, make):
         monkeypatch.setenv("TESTMON_CORE", core)
-        assert isinstance(make_collector(""), COLLECTORS[core])
+        assert isinstance(make(), COLLECTORS[core])
 
-    def test_unknown_value_uses_default(self, monkeypatch):
+    def test_unknown_value_uses_default(self, monkeypatch, make):
         monkeypatch.setenv("TESTMON_CORE", "nope")
         expected = "sysmon" if sys.version_info >= (3, 12) else "ctrace"
-        assert isinstance(make_collector(""), COLLECTORS[expected])
+        assert isinstance(make(), COLLECTORS[expected])
 
     @pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
-    def test_no_free_tool_id_falls_back_to_ctrace(self, monkeypatch):
+    def test_no_free_tool_id_falls_back_to_ctrace(self, monkeypatch, make):
         import testmon.collector.sysmon  # pylint: disable=import-outside-toplevel
 
         monkeypatch.delenv("TESTMON_CORE", raising=False)
         monkeypatch.setattr(
             testmon.collector.sysmon, "search_free_tool_id", lambda: None
         )
-        assert isinstance(make_collector(""), CoreTestmon)
+        assert isinstance(make(), CoreTestmon)
+
+    @pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+    def test_tool_id_held_from_creation(self, monkeypatch, make):
+        # make_collector can fall back to ctrace only before tests run, so the
+        # id must not be taken later by someone else.
+        monkeypatch.delenv("TESTMON_CORE", raising=False)
+        collector = make()
+        assert sys.monitoring.get_tool(collector._tool_id) == "testmon"
+        collector.close()
+        assert collector._tool_id is None
 
 
 class TestMisc(object):
@@ -331,6 +358,34 @@ class TestTestmonRecursive:
             "2": {2},
             "3": {2},
         }
+
+    @pytest.mark.parametrize("collector_class", COLLECTORS.values(), ids=COLLECTORS)
+    def test_lines_after_batch_end_dont_replace_fingerprint(
+        self, testdir, collector_class
+    ):
+        # Code can run after the batch closes and before the next test starts
+        # (a conftest.py pytest_runtest_logreport hook). Reported in the next
+        # batch under the test that closed the batch, those lines would
+        # replace that test's whole fingerprint in the DB.
+        testdir.makepyfile(
+            after_dep="def inc(x):\n    return x + 1\n",
+            hook_dep="def hook():\n    return 0\n",
+        )
+        testdir.syspathinsert()
+        import after_dep  # pylint: disable=import-error,import-outside-toplevel
+        import hook_dep  # pylint: disable=import-error,import-outside-toplevel
+
+        testmon = collector_class(rootdir=str(testdir.tmpdir))
+        testmon.start_testmon("test_a.py::test_1", next_test_name=None)
+        after_dep.inc(1)
+        first = testmon.get_batch_coverage_data()
+        hook_dep.hook()  # after the batch, before the next test
+        testmon.start_testmon("test_a.py::test_2", next_test_name=None)
+        second = testmon.get_batch_coverage_data()
+        testmon.close()
+
+        assert first["test_a.py::test_1"]["after_dep.py"] == {2}
+        assert set(second) == {"test_a.py::test_2"}
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="creating symlinks needs privileges"
