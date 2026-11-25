@@ -875,7 +875,7 @@ def test_add():    assert add(1, 2) == 3
                     time.sleep(0.1)
 
                 def test_3():
-                    time.sleep(0.15)
+                    time.sleep(0.4)
         """
         )
         testdir.runpytest_inprocess("--testmon")
@@ -918,7 +918,7 @@ def test_add():    assert add(1, 2) == 3
                     time.sleep(0.1)
 
                 def test_3():
-                    time.sleep(0.15)
+                    time.sleep(0.4)
         """
         )
         testdir.runpytest_inprocess("--testmon")
@@ -972,7 +972,7 @@ def test_add():    assert add(1, 2) == 3
                     time.sleep(0.1)
 
                 def test_3():
-                    time.sleep(0.15)
+                    time.sleep(0.4)
         """
         )
         testdir.runpytest_inprocess("--testmon")
