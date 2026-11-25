@@ -1,8 +1,7 @@
 name: Benchmark
+# Alma fork: on demand only, not on each upstream sync or rebase push
 on:
-  push:
-    branches: ['**']
-  pull_request:
+  workflow_dispatch:
 
 env:
   MITER_TAG: v10.5.0  # more-itertools release benchmarked
